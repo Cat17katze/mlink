@@ -1,0 +1,188 @@
+<div id="music-resolver">
+    <form id="music-form">
+        <p>
+            <label for="music_query_input">Streaming-Link oder Songtitel / Interpret:</label><br>
+            <input type="text" id="music_query_input" required placeholder="z. B. Rick Astley Never Gonna Give You Up oder Spotify-Link" style="width: 100%; max-width: 480px;">
+            <button type="submit" id="music-submit-btn">Suchen</button>
+        </p>
+    </form>
+
+    <div id="music-status" aria-live="polite"></div>
+    <div id="music-results"></div>
+</div>
+
+<script>
+(() => {
+    const form = document.getElementById('music-form');
+    const input = document.getElementById('music_query_input');
+    const btn = document.getElementById('music-submit-btn');
+    const statusBox = document.getElementById('music-status');
+    const resultsBox = document.getElementById('music-results');
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const query = input.value.trim();
+        if (!query) return;
+
+        btn.disabled = true;
+        statusBox.innerHTML = '<p>Suche läuft...</p>';
+        resultsBox.innerHTML = '';
+
+        try {
+            const response = await fetch('/api/site/mlink/index.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: query })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                statusBox.innerHTML = `<p role="alert"><strong>Fehler:</strong> ${escapeHtml(data.error || 'Ein Fehler ist aufgetreten.')}</p>`;
+                return;
+            }
+
+            statusBox.innerHTML = '';
+
+            if (data.cleanedUrl && !data.isTextSearch) {
+                input.value = data.cleanedUrl;
+            }
+
+            const displayDate = data.releaseDate || 'Unbekannt';
+
+            let html = '';
+
+            if (data.multipleResults) {
+                html += `<p style="background: #fff3cd; color: #856404; padding: 0.5rem; border-radius: 4px;">`;
+                html += `ℹ️️ <strong>Hinweis:</strong> Es gab mehrere Ergebnisse (${escapeHtml(data.totalResults)} Treffer). Es wird das wahrscheinlichste Original bzw. der passendste Treffer angezeigt.`;
+                html += `</p>`;
+            }
+
+            // Cover-Bereich mit Zwei-Klick-Lösung / Opt-in
+            if (data.thumbnail) {
+                html += `
+                    <div id="music-cover-wrapper" style="margin-bottom: 1rem;">
+                        <p style="font-size: 0.9em; margin: 0 0 0.5rem 0;">
+                            <em>Hinweis: Beim Laden des Covers wird eine Verbindung zu externen Servern des Streaminganbieters aufgebaut (Datenübertragung).</em>
+                        </p>
+                        <button type="button" id="music-load-cover-btn" data-cover-url="${escapeHtml(data.thumbnail)}">
+                            Cover laden
+                        </button>
+                    </div>
+                `;
+            }
+
+            html += `<h3>${escapeHtml(data.artist)} – ${escapeHtml(data.title)}</h3>`;
+            html += `<p><strong>Release-Datum:</strong> ${escapeHtml(displayDate)}</p>`;
+
+            if (data.links && data.links.length > 0) {
+                html += '<ul>';
+                data.links.forEach(item => {
+                    html += `<li><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.platform)}</a></li>`;
+                });
+                html += '</ul>';
+            }
+
+            if (data.pageUrl) {
+                html += `<p><a href="${escapeHtml(data.pageUrl)}" target="_blank" rel="noopener noreferrer">Songlink Hub öffnen</a></p>`;
+            }
+
+            // Teilen-Karte formatieren
+            let shareLinksText = '';
+            if (data.links && data.links.length > 0) {
+                shareLinksText = data.links.map(item => `${item.platform} : ${item.url}`).join('\n');
+            }
+
+            const shareCardText = 
+`Titel: ${data.title}
+Autor: ${data.artist}
+Release- Datum: ${displayDate}
+
+${shareLinksText}
+
+Liste erstellt mit MLINK von Riley
+https://riley-tech.de/?p=mlink.html`;
+
+            const supportsNativeShare = !!(navigator.share && navigator.canShare && navigator.canShare({ text: shareCardText }));
+
+            html += `
+                <hr>
+                <div>
+                    <h4>Teilen-Karte</h4>
+                    <textarea id="music-share-textarea" rows="10" style="width: 100%; max-width: 500px;" readonly>${escapeHtml(shareCardText)}</textarea>
+                    <br>
+                    <button type="button" id="music-copy-btn">In die Zwischenablage kopieren</button>
+                    ${supportsNativeShare ? '<button type="button" id="music-native-share-btn">Teilen…</button>' : ''}
+                    <span id="music-copy-feedback" style="margin-left: 0.5rem;" aria-live="polite"></span>
+                </div>
+            `;
+
+            resultsBox.innerHTML = html;
+
+            // Event-Listener: Cover erst nach manuellem Klick nachladen
+            const loadCoverBtn = document.getElementById('music-load-cover-btn');
+            if (loadCoverBtn) {
+                loadCoverBtn.addEventListener('click', () => {
+                    const coverUrl = loadCoverBtn.getAttribute('data-cover-url');
+                    const wrapper = document.getElementById('music-cover-wrapper');
+                    if (wrapper && coverUrl) {
+                        wrapper.innerHTML = `<img src="${escapeHtml(coverUrl)}" alt="Cover" width="96" height="96">`;
+                    }
+                });
+            }
+
+            // Event-Listener: In die Zwischenablage kopieren
+            const copyBtn = document.getElementById('music-copy-btn');
+            const textarea = document.getElementById('music-share-textarea');
+            const feedback = document.getElementById('music-copy-feedback');
+
+            copyBtn.addEventListener('click', async () => {
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(textarea.value);
+                    } else {
+                        textarea.select();
+                        document.execCommand('copy');
+                    }
+                    feedback.textContent = 'Kopiert!';
+                    setTimeout(() => { feedback.textContent = ''; }, 2500);
+                } catch (err) {
+                    feedback.textContent = 'Fehler beim Kopieren.';
+                }
+            });
+
+            // Event-Listener: Nativer Mobil-Share-Dialog
+            if (supportsNativeShare) {
+                const nativeShareBtn = document.getElementById('music-native-share-btn');
+                nativeShareBtn.addEventListener('click', async () => {
+                    try {
+                        await navigator.share({
+                            title: `${data.artist} – ${data.title}`,
+                            text: shareCardText
+                        });
+                    } catch (err) {
+                        if (err.name !== 'AbortError') {
+                            feedback.textContent = 'Teilen fehlgeschlagen.';
+                            setTimeout(() => { feedback.textContent = ''; }, 2500);
+                        }
+                    }
+                });
+            }
+
+        } catch (err) {
+            statusBox.innerHTML = '<p role="alert"><strong>Netzwerkfehler:</strong> Die Schnittstelle konnte nicht erreicht werden.</p>';
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+})();
+</script>
